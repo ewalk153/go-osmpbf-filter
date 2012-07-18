@@ -25,7 +25,9 @@ import (
 	"io"
 	"math"
 	"os"
+  "fmt"
 	"runtime"
+  "bufio"
 )
 
 type boundingBoxUpdate struct {
@@ -75,7 +77,7 @@ func supportedFilePass(file *os.File) {
 	}
 }
 
-func findMatchingWaysPass(file *os.File, filterTag string, filterValue string, totalBlobCount int) [][]int64 {
+func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int) [][]int64 {
 	wayNodeRefs := make([][]int64, 0, 100)
 	pending := make(chan bool)
 
@@ -109,11 +111,11 @@ func findMatchingWaysPass(file *os.File, filterTag string, filterValue string, t
 
 					for _, primitiveGroup := range primitiveBlock.Primitivegroup {
 						for _, way := range primitiveGroup.Ways {
-							for i, keyIndex := range way.Keys {
-								valueIndex := way.Vals[i]
+							for _, keyIndex := range way.Keys {
+								//valueIndex := way.Vals[i]
 								key := string(primitiveBlock.Stringtable.S[keyIndex])
-								value := string(primitiveBlock.Stringtable.S[valueIndex])
-								if key == filterTag && value == filterValue {
+							//	value := string(primitiveBlock.Stringtable.S[valueIndex])
+								if key == filterTag {
 									var nodeRefs = make([]int64, len(way.Refs))
 									var prevNodeId int64 = 0
 									for index, deltaNodeId := range way.Refs {
@@ -162,7 +164,7 @@ func isInBoundingBoxes(boundingBoxes [][]float64, lon float64, lat float64) bool
 	return false
 }
 
-func calculateBoundingBoxesPass(file *os.File, wayNodeRefs [][]int64, totalBlobCount int) [][]float64 {
+func calculateBoundingBoxesPass(file *os.File, wayNodeRefs [][]int64, totalBlobCount int, output *bufio.Writer) [][]float64 {
 	// maps node ids to wayNodeRef indexes
 	nodeOwners := make(map[int64][]int, len(wayNodeRefs)*4)
 	for wayIndex, way := range wayNodeRefs {
@@ -201,6 +203,19 @@ func calculateBoundingBoxesPass(file *os.File, wayNodeRefs [][]int64, totalBlobC
 	}()
 
 	blockDataReader := MakePrimitiveBlockReader(file)
+  
+  nodequeue := make( chan OsmNodeAbstraction)
+  exitqueue := make( chan bool)
+  go func(){
+    select{
+    case n := <- nodequeue:
+      lon, lat := n.GetLonLat()
+      output.WriteString(fmt.Sprintf("%s,%s,%s", n.GetNodeId(), lat, lon))
+    case <-exitqueue:
+      return
+    }
+  }()
+  
 	for i := 0; i < runtime.NumCPU()*2; i++ {
 		go func() {
 			for data := range blockDataReader {
@@ -224,17 +239,20 @@ func calculateBoundingBoxesPass(file *os.File, wayNodeRefs [][]int64, totalBlobC
 							continue
 						}
 						lon, lat := node.GetLonLat()
+            
+            go func(){nodequeue<- node}()
+            
 						for _, wayIndex := range owners {
 							updateWayBoundingBoxes <- boundingBoxUpdate{wayIndex, lon, lat}
 						}
 
 					}
 				}
-
 				pending <- true
 			}
 		}()
 	}
+  exitqueue<- true
 
 	blobCount := 0
 	for _ = range pending {
@@ -515,70 +533,11 @@ func writeNodes(file *os.File, nodes []node) error {
 	if len(nodes) == 0 {
 		return nil
 	}
-
-	for nodeGroupIndex := 0; nodeGroupIndex < (len(nodes)/8000)+1; nodeGroupIndex++ {
-		beg := (nodeGroupIndex + 0) * 8000
-		end := (nodeGroupIndex + 1) * 8000
-		if len(nodes) < end {
-			end = len(nodes)
-		}
-		nodeGroup := nodes[beg:end]
-
-		stringTable := make([][]byte, 1, 1000)
-		stringTableIndexes := make(map[string]uint32, 0)
-
-		for _, node := range nodeGroup {
-			for _, s := range node.keys {
-				idx := stringTableIndexes[s]
-				if idx == 0 {
-					stringTableIndexes[s] = uint32(len(stringTable))
-					stringTable = append(stringTable, []byte(s))
-				}
-			}
-			for _, s := range node.values {
-				idx := stringTableIndexes[s]
-				if idx == 0 {
-					stringTableIndexes[s] = uint32(len(stringTable))
-					stringTable = append(stringTable, []byte(s))
-				}
-			}
-		}
-
-		osmNodes := make([]*OSMPBF.Node, len(nodeGroup))
-
-		for idx, node := range nodeGroup {
-			osmNode := &OSMPBF.Node{}
-
-			var nodeId int64 = node.id
-			osmNode.Id = &nodeId
-
-			var rawlon int64 = int64(node.lon/.000000001) / 100
-			var rawlat int64 = int64(node.lat/.000000001) / 100
-			osmNode.Lon = &rawlon
-			osmNode.Lat = &rawlat
-
-			osmNode.Keys = make([]uint32, len(node.keys))
-			for i, s := range node.keys {
-				osmNode.Keys[i] = stringTableIndexes[s]
-			}
-			osmNode.Vals = make([]uint32, len(node.values))
-			for i, s := range node.values {
-				osmNode.Vals[i] = stringTableIndexes[s]
-			}
-			osmNodes[idx] = osmNode
-		}
-
-		group := OSMPBF.PrimitiveGroup{}
-		group.Nodes = osmNodes
-
-		block := OSMPBF.PrimitiveBlock{}
-		block.Stringtable = &OSMPBF.StringTable{stringTable, nil}
-		block.Primitivegroup = []*OSMPBF.PrimitiveGroup{&group}
-		err := WriteBlock(file, &block, "OSMData")
-		if err != nil {
-			return err
-		}
-	}
+  printer := bufio.NewWriter(file)
+  fmt.Println("writing to file")
+  for i:=0; i< len(nodes); i++{
+    printer.WriteString(fmt.Sprintf("%i,%i,%i", nodes[i].id, nodes[i].lat, nodes[i].lon))
+  }
 
 	return nil
 }
@@ -664,10 +623,10 @@ func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
 
 	inputFile := flag.String("i", "input.pbf.osm", "input OSM PBF file")
-	outputFile := flag.String("o", "output.pbf.osm", "output OSM PBF file")
+	//outputFile := flag.String("o", "output.pbf.osm", "output OSM PBF file")
 	highMemory := flag.Bool("high-memory", false, "use higher amounts of memory for higher performance")
-	filterTag := flag.String("t", "leisure", "tag to filter ways based upon")
-	filterValue := flag.String("v", "golf_course", "value to ensure that the way's tag is set to")
+	filterTag := flag.String("t", "highway", "tag to filter ways based upon")
+	//filterValue := flag.String("v", "golf_course", "value to ensure that the way's tag is set to")
 	flag.Parse()
 
 	file, err := os.Open(*inputFile)
@@ -701,55 +660,60 @@ func main() {
 	println("Pass 1/6: Complete")
 
 	println("Pass 2/6: Find node references of matching areas")
-	wayNodeRefs := findMatchingWaysPass(file, *filterTag, *filterValue, totalBlobCount)
+	wayNodeRefs := findMatchingWaysPass(file, *filterTag, totalBlobCount)
 	println("Pass 2/6: Complete;", len(wayNodeRefs), "matching ways found.")
 
+  nodesfile, err := os.OpenFile("nodes.csv", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0664)
+	if err != nil {
+		println("Output file write error:", err.Error())
+		os.Exit(2)
+	}
+  
 	println("Pass 3/6: Establish bounding boxes")
-	boundingBoxes := calculateBoundingBoxesPass(file, wayNodeRefs, totalBlobCount)
+	boundingBoxes := calculateBoundingBoxesPass(file, wayNodeRefs, totalBlobCount, bufio.NewWriter(nodesfile))
 	println("Pass 3/6: Complete;", len(boundingBoxes), "bounding boxes calculated.")
 
-	println("Pass 4/6: Find nodes within bounding boxes")
-	nodes := findNodesWithinBoundingBoxesPass(file, boundingBoxes, totalBlobCount)
-	println("Pass 4/6: Complete;", len(nodes), "nodes located.")
+	//~ println("Pass 4/6: Find nodes within bounding boxes")
+	//~ nodes := findNodesWithinBoundingBoxesPass(file, boundingBoxes, totalBlobCount)
+	//~ println("Pass 4/6: Complete;", len(nodes), "nodes located.")
 
-	println("Pass 5/6: Find ways using intersecting nodes")
-	ways := findWaysUsingNodesPass(file, nodes, totalBlobCount)
-	println("Pass 5/6: Complete;", len(ways), "ways located.")
+	//~ println("Pass 5/6: Find ways using intersecting nodes")
+	//~ ways := findWaysUsingNodesPass(file, nodes, totalBlobCount)
+	//~ println("Pass 5/6: Complete;", len(ways), "ways located.")
+//~ 
+	//~ println("Pass 6/6: Find nodes referenced by intersected ways")
+	//~ nodes = findNodesReferencedByWaysPass(file, ways, nodes, totalBlobCount)
+	//~ println("Pass 6/6: Complete;", len(nodes), "total nodes (pass 4 + pass 6) located.")
+//~ 
+	//~ output, err := os.OpenFile(*outputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0664)
+	//~ if err != nil {
+		//~ println("Output file write error:", err.Error())
+		//~ os.Exit(2)
+	//~ }
+//~ 
+	//~ println("Out 1/3: Writing header")
+	//~ err = WriteHeader(output)
+	//~ if err != nil {
+		//~ println("Output file write error:", err.Error())
+		//~ os.Exit(2)
+	//~ }
+	//~ println("Out 2/3: Writing nodes")
+	//~ err = writeNodes(nodesfile, nodes)
+	//~ if err != nil {
+		//~ println("Output file write error:", err.Error())
+		//~ os.Exit(2)
+	//~ }
 
-	println("Pass 6/6: Find nodes referenced by intersected ways")
-	nodes = findNodesReferencedByWaysPass(file, ways, nodes, totalBlobCount)
-	println("Pass 6/6: Complete;", len(nodes), "total nodes (pass 4 + pass 6) located.")
-
-	output, err := os.OpenFile(*outputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0664)
-	if err != nil {
-		println("Output file write error:", err.Error())
-		os.Exit(2)
-	}
-
-	println("Out 1/3: Writing header")
-	err = WriteHeader(output)
-	if err != nil {
-		println("Output file write error:", err.Error())
-		os.Exit(2)
-	}
-
-	println("Out 2/3: Writing nodes")
-	err = writeNodes(output, nodes)
-	if err != nil {
-		println("Output file write error:", err.Error())
-		os.Exit(2)
-	}
-
-	println("Out 3/3: Writing ways")
-	err = writeWays(output, ways)
-	if err != nil {
-		println("Output file write error:", err.Error())
-		os.Exit(2)
-	}
-
-	err = output.Close()
-	if err != nil {
-		println("Output file write error:", err.Error())
-		os.Exit(2)
-	}
+	//~ println("Out 3/3: Writing ways")
+	//~ err = writeWays(output, ways)
+	//~ if err != nil {
+		//~ println("Output file write error:", err.Error())
+		//~ os.Exit(2)
+	//~ }
+//~ 
+	//~ err = output.Close()
+	//~ if err != nil {
+		//~ println("Output file write error:", err.Error())
+		//~ os.Exit(2)
+	//~ }
 }
