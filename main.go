@@ -77,7 +77,7 @@ func supportedFilePass(file *os.File) {
 	}
 }
 
-func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int) [][]int64 {
+func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, output *bufio.Writer) [][]int64 {
 	wayNodeRefs := make([][]int64, 0, 100)
 	pending := make(chan bool)
 
@@ -90,9 +90,14 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int) [
 		}
 		appendNodeRefsComplete <- true
 	}()
+  
+  wayqueue := make(chan *OSMPBF.Way)
+	exitqueue := make(chan bool)
+	done := make(chan bool)
+	wCount := runtime.NumCPU() * 2
 
 	blockDataReader := MakePrimitiveBlockReader(file)
-	for i := 0; i < runtime.NumCPU()*2; i++ {
+	for i := 0; i < wCount; i++ {
 		go func() {
 			for data := range blockDataReader {
 				if *data.blobHeader.Type == "OSMData" {
@@ -123,17 +128,41 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int) [
 										prevNodeId = nodeId
 										nodeRefs[index] = nodeId
 									}
+                  wayqueue <- way
 									appendNodeRefs <- nodeRefs
 								}
 							}
 						}
 					}
 				}
-
 				pending <- true
 			}
+      exitqueue<- true
 		}()
 	}
+  
+  
+	go func() {
+		j := 0
+		for i := 0; true; i++ {
+			select {
+			case way := <-wayqueue:
+				output.WriteString(fmt.Sprintf("%d\n", *way.Id))
+				if i%1000 == 0 {
+					output.Flush()
+				}
+			case <-exitqueue:
+				j++
+				output.Flush()
+				fmt.Println("Work return, ", i, "nodes processed")
+				if j == wCount {
+					done <- true
+					return
+				}
+			}
+		}
+	}()
+
 
 	blobCount := 0
 	for _ = range pending {
@@ -149,6 +178,7 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int) [
 		}
 	}
 
+	<-done
 	return wayNodeRefs
 }
 
@@ -651,9 +681,17 @@ func main() {
 	println("Pass 1/6: Find OSMHeaders")
 	supportedFilePass(file)
 	println("Pass 1/6: Complete")
+  
+  // saving ways in a csv file
+  
+  waysfile, err := os.OpenFile("ways.csv", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0664)
+	if err != nil {
+		println("Output file write error:", err.Error())
+		os.Exit(2)
+	}
 
 	println("Pass 2/6: Find node references of matching areas")
-	wayNodeRefs := findMatchingWaysPass(file, *filterTag, totalBlobCount)
+	wayNodeRefs := findMatchingWaysPass(file, *filterTag, totalBlobCount, bufio.NewWriter(waysfile))
 	println("Pass 2/6: Complete;", len(wayNodeRefs), "matching ways found.")
 
 	nodesfile, err := os.OpenFile("nodes.csv", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0664)
