@@ -27,6 +27,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strings"
 )
 
 type boundingBoxUpdate struct {
@@ -46,6 +47,12 @@ type way struct {
 	nodeIds []int64
 	keys    []string
 	values  []string
+}
+
+type myway struct {
+	id      int64
+	nodeIds []int64
+	highway string
 }
 
 func supportedFilePass(file *os.File) {
@@ -89,8 +96,7 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, o
 		}
 		appendNodeRefsComplete <- true
 	}()
-
-	wayqueue := make(chan *OSMPBF.Way)
+	wayqueue := make(chan *myway)
 	exitqueue := make(chan bool)
 	done := make(chan bool)
 	wCount := runtime.NumCPU() * 2
@@ -115,10 +121,10 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, o
 
 					for _, primitiveGroup := range primitiveBlock.Primitivegroup {
 						for _, way := range primitiveGroup.Ways {
-							for _, keyIndex := range way.Keys {
-								//valueIndex := way.Vals[i]
+							for i, keyIndex := range way.Keys {
+								valueIndex := way.Vals[i]
 								key := string(primitiveBlock.Stringtable.S[keyIndex])
-								//	value := string(primitiveBlock.Stringtable.S[valueIndex])
+								value := string(primitiveBlock.Stringtable.S[valueIndex])
 								if key == filterTag {
 									var nodeRefs = make([]int64, len(way.Refs))
 									var prevNodeId int64 = 0
@@ -127,7 +133,8 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, o
 										prevNodeId = nodeId
 										nodeRefs[index] = nodeId
 									}
-									wayqueue <- way
+									wayqueue <- &myway{*way.Id, nodeRefs, value}
+
 									appendNodeRefs <- nodeRefs
 								}
 							}
@@ -145,7 +152,11 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, o
 		for i := 0; true; i++ {
 			select {
 			case way := <-wayqueue:
-				output.WriteString(fmt.Sprintf("%d\n", *way.Id))
+				csv := make([]string, len(way.nodeIds))
+				for i, v := range way.nodeIds {
+					csv[i] = fmt.Sprintf("%d", v)
+				}
+				output.WriteString(fmt.Sprintf("%d,%s,%s\n", way.id, way.highway, strings.Join(csv, ",")))
 				if i%1000 == 0 {
 					output.Flush()
 				}
