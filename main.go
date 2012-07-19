@@ -83,7 +83,19 @@ func supportedFilePass(file *os.File) {
 	}
 }
 
-func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, output *bufio.Writer) [][]int64 {
+func containsValue(el *string, list *[]string) bool {
+	if list == nil {
+		return true
+	}
+	for _, elx := range *list {
+		if *el == elx {
+			return true
+		}
+	}
+	return false
+}
+
+func findMatchingWaysPass(file *os.File, filterTag string, filterValues []string, totalBlobCount int, output *bufio.Writer) [][]int64 {
 	wayNodeRefs := make([][]int64, 0, 100)
 	pending := make(chan bool)
 
@@ -125,7 +137,7 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, o
 								valueIndex := way.Vals[i]
 								key := string(primitiveBlock.Stringtable.S[keyIndex])
 								value := string(primitiveBlock.Stringtable.S[valueIndex])
-								if key == filterTag {
+								if key == filterTag && containsValue(&value, &filterValues) {
 									var nodeRefs = make([]int64, len(way.Refs))
 									var prevNodeId int64 = 0
 									for index, deltaNodeId := range way.Refs {
@@ -285,11 +297,15 @@ func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
 
 	inputFile := flag.String("i", "input.pbf.osm", "input OSM PBF file")
-	//outputFile := flag.String("o", "output.pbf.osm", "output OSM PBF file")
 	highMemory := flag.Bool("high-memory", false, "use higher amounts of memory for higher performance")
 	filterTag := flag.String("t", "highway", "tag to filter ways based upon")
-	//filterValue := flag.String("v", "golf_course", "value to ensure that the way's tag is set to")
+	filterValString := flag.String("r", "motorway motorway_linktrunk trunk_link primary primary_link secondary secondary_link tertiary tertiary_link", "types of roads to import")
 	flag.Parse()
+	
+	mystrings := strings.Fields(*filterValString)
+	filterValues := &mystrings
+	fmt.Println("Will find", *filterTag, "for", mystrings)
+	
 
 	file, err := os.Open(*inputFile)
 	if err != nil {
@@ -330,7 +346,7 @@ func main() {
 	}
 
 	println("Pass 2/3: Find node references of matching areas")
-	wayNodeRefs := findMatchingWaysPass(file, *filterTag, totalBlobCount, bufio.NewWriter(waysfile))
+	wayNodeRefs := findMatchingWaysPass(file, *filterTag, *filterValues, totalBlobCount, bufio.NewWriter(waysfile))
 	println("Pass 2/3: Complete;", len(wayNodeRefs), "matching ways found.")
 
 	nodesfile, err := os.OpenFile("nodes.csv", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0664)
