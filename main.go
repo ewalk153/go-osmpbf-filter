@@ -52,7 +52,7 @@ type way struct {
 type myway struct {
 	id      int64
 	nodeIds []int64
-	highway string
+	highway, oneway string
 }
 
 func supportedFilePass(file *os.File) {
@@ -118,26 +118,37 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, o
 						println("OSMData decode error:", err.Error())
 						os.Exit(6)
 					}
-
+          var highway, oneway string
+          var tosend bool
+          var nodeRefs []int64
 					for _, primitiveGroup := range primitiveBlock.Primitivegroup {
 						for _, way := range primitiveGroup.Ways {
+              highway=""
+              oneway=""
+              tosend=false
 							for i, keyIndex := range way.Keys {
 								valueIndex := way.Vals[i]
 								key := string(primitiveBlock.Stringtable.S[keyIndex])
 								value := string(primitiveBlock.Stringtable.S[valueIndex])
 								if key == filterTag {
-									var nodeRefs = make([]int64, len(way.Refs))
+                  highway=value
+									nodeRefs = make([]int64, len(way.Refs))
 									var prevNodeId int64 = 0
 									for index, deltaNodeId := range way.Refs {
 										nodeId := prevNodeId + deltaNodeId
 										prevNodeId = nodeId
 										nodeRefs[index] = nodeId
 									}
-									wayqueue <- &myway{*way.Id, nodeRefs, value}
-
+                  tosend=true
 									appendNodeRefs <- nodeRefs
 								}
+                if key=="oneway"{
+                  oneway=value
+                }
 							}
+              if tosend{
+                wayqueue <- &myway{*way.Id, nodeRefs, highway, oneway}
+              }
 						}
 					}
 				}
@@ -156,7 +167,7 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, o
 				for i, v := range way.nodeIds {
 					csv[i] = fmt.Sprintf("%d", v)
 				}
-				output.WriteString(fmt.Sprintf("%d,%s,%s\n", way.id, way.highway, strings.Join(csv, ",")))
+				output.WriteString(fmt.Sprintf("%d,%s,%s,%s\n", way.id, way.highway,way.oneway, strings.Join(csv, ",")))
 				if i%1000 == 0 {
 					output.Flush()
 				}
@@ -192,14 +203,13 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, o
 
 func findMatchingNodesPass(file *os.File, wayNodeRefs [][]int64, totalBlobCount int, output *bufio.Writer) {
 	// maps node ids to wayNodeRef indexes
-	nodeOwners := make(map[int64]bool, len(wayNodeRefs)*3)
+	nodeOwners := make(map[int64]bool)// len(wayNodeRefs)*2)
 	for _, way := range wayNodeRefs {
 		for _, nodeId := range way {
-			if nodeOwners[nodeId] == false {
-				nodeOwners[nodeId] = true
-			}
+      nodeOwners[nodeId] = true
 		}
 	}
+  println(len(nodeOwners))
 
 	pending := make(chan bool)
 
@@ -212,7 +222,7 @@ func findMatchingNodesPass(file *os.File, wayNodeRefs [][]int64, totalBlobCount 
 	wCount := runtime.NumCPU() * 2
 	for i := 0; i < wCount; i++ {
 		go func() {
-			var n node
+			//var n node
 			var lon, lat float64
 			for data := range blockDataReader {
 				if *data.blobHeader.Type == "OSMData" {
@@ -235,10 +245,8 @@ func findMatchingNodesPass(file *os.File, wayNodeRefs [][]int64, totalBlobCount 
 							continue
 						}
 						lon, lat = absNode.GetLonLat()
-						n = node{absNode.GetNodeId(),
-							lon,
-							lat}
-						nodequeue <- &n
+						
+						nodequeue <- &node{absNode.GetNodeId(), lon, lat}
 					}
 				}
 				pending <- true
