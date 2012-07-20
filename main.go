@@ -50,8 +50,8 @@ type way struct {
 }
 
 type myway struct {
-	id      int64
-	nodeIds []int64
+	id              int64
+	nodeIds         []int64
 	highway, oneway string
 }
 
@@ -83,7 +83,19 @@ func supportedFilePass(file *os.File) {
 	}
 }
 
-func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, output *bufio.Writer) [][]int64 {
+func containsValue(el *string, list *[]string) bool {
+	if list == nil {
+		return true
+	}
+	for _, elx := range *list {
+		if *el == elx {
+			return true
+		}
+	}
+	return false
+}
+
+func findMatchingWaysPass(file *os.File, filterTag string, filterValues []string, totalBlobCount int, output *bufio.Writer) [][]int64 {
 	wayNodeRefs := make([][]int64, 0, 100)
 	pending := make(chan bool)
 
@@ -118,37 +130,36 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, o
 						println("OSMData decode error:", err.Error())
 						os.Exit(6)
 					}
-          var highway, oneway string
-          var tosend bool
-          var nodeRefs []int64
+					var highway, oneway string
+					var tosend bool
+					var nodeRefs []int64
 					for _, primitiveGroup := range primitiveBlock.Primitivegroup {
 						for _, way := range primitiveGroup.Ways {
-              highway=""
-              oneway=""
-              tosend=false
+							highway = ""
+							oneway = ""
+							tosend = false
 							for i, keyIndex := range way.Keys {
 								valueIndex := way.Vals[i]
 								key := string(primitiveBlock.Stringtable.S[keyIndex])
 								value := string(primitiveBlock.Stringtable.S[valueIndex])
-								if key == filterTag {
-                  highway=value
-									nodeRefs = make([]int64, len(way.Refs))
+								if key == filterTag && containsValue(&value, &filterValues) {
+									var nodeRefs = make([]int64, len(way.Refs))
 									var prevNodeId int64 = 0
 									for index, deltaNodeId := range way.Refs {
 										nodeId := prevNodeId + deltaNodeId
 										prevNodeId = nodeId
 										nodeRefs[index] = nodeId
 									}
-                  tosend=true
+									tosend = true
 									appendNodeRefs <- nodeRefs
 								}
-                if key=="oneway"{
-                  oneway=value
-                }
+								if key == "oneway" {
+									oneway = value
+								}
 							}
-              if tosend{
-                wayqueue <- &myway{*way.Id, nodeRefs, highway, oneway}
-              }
+							if tosend {
+								wayqueue <- &myway{*way.Id, nodeRefs, highway, oneway}
+							}
 						}
 					}
 				}
@@ -167,7 +178,7 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, o
 				for i, v := range way.nodeIds {
 					csv[i] = fmt.Sprintf("%d", v)
 				}
-				output.WriteString(fmt.Sprintf("%d,%s,%s,%s\n", way.id, way.highway,way.oneway, strings.Join(csv, ",")))
+				output.WriteString(fmt.Sprintf("%d,%s,%s,%s\n", way.id, way.highway, way.oneway, strings.Join(csv, ",")))
 				if i%1000 == 0 {
 					output.Flush()
 				}
@@ -203,13 +214,13 @@ func findMatchingWaysPass(file *os.File, filterTag string, totalBlobCount int, o
 
 func findMatchingNodesPass(file *os.File, wayNodeRefs [][]int64, totalBlobCount int, output *bufio.Writer) {
 	// maps node ids to wayNodeRef indexes
-	nodeOwners := make(map[int64]bool)// len(wayNodeRefs)*2)
+	nodeOwners := make(map[int64]bool) // len(wayNodeRefs)*2)
 	for _, way := range wayNodeRefs {
 		for _, nodeId := range way {
-      nodeOwners[nodeId] = true
+			nodeOwners[nodeId] = true
 		}
 	}
-  println(len(nodeOwners))
+	println(len(nodeOwners))
 
 	pending := make(chan bool)
 
@@ -245,7 +256,7 @@ func findMatchingNodesPass(file *os.File, wayNodeRefs [][]int64, totalBlobCount 
 							continue
 						}
 						lon, lat = absNode.GetLonLat()
-						
+
 						nodequeue <- &node{absNode.GetNodeId(), lon, lat}
 					}
 				}
@@ -293,11 +304,14 @@ func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
 
 	inputFile := flag.String("i", "input.pbf.osm", "input OSM PBF file")
-	//outputFile := flag.String("o", "output.pbf.osm", "output OSM PBF file")
 	highMemory := flag.Bool("high-memory", false, "use higher amounts of memory for higher performance")
 	filterTag := flag.String("t", "highway", "tag to filter ways based upon")
-	//filterValue := flag.String("v", "golf_course", "value to ensure that the way's tag is set to")
+	filterValString := flag.String("r", "motorway motorway_linktrunk trunk_link primary primary_link secondary secondary_link tertiary tertiary_link", "types of roads to import")
 	flag.Parse()
+
+	mystrings := strings.Fields(*filterValString)
+	filterValues := &mystrings
+	fmt.Println("Will find", *filterTag, "for", mystrings)
 
 	file, err := os.Open(*inputFile)
 	if err != nil {
@@ -338,7 +352,7 @@ func main() {
 	}
 
 	println("Pass 2/3: Find node references of matching areas")
-	wayNodeRefs := findMatchingWaysPass(file, *filterTag, totalBlobCount, bufio.NewWriter(waysfile))
+	wayNodeRefs := findMatchingWaysPass(file, *filterTag, *filterValues, totalBlobCount, bufio.NewWriter(waysfile))
 	println("Pass 2/3: Complete;", len(wayNodeRefs), "matching ways found.")
 
 	nodesfile, err := os.OpenFile("nodes.csv", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0664)
