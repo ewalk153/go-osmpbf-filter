@@ -42,13 +42,6 @@ type node struct {
 	lat float64
 }
 
-type way struct {
-	id      int64
-	nodeIds []int64
-	keys    []string
-	values  []string
-}
-
 type myway struct {
 	id              int64
 	nodeIds         []int64
@@ -143,7 +136,7 @@ func findMatchingWaysPass(file *os.File, filterTag string, filterValues []string
 								key := string(primitiveBlock.Stringtable.S[keyIndex])
 								value := string(primitiveBlock.Stringtable.S[valueIndex])
 								if key == filterTag && containsValue(&value, &filterValues) {
-									var nodeRefs = make([]int64, len(way.Refs))
+									nodeRefs = make([]int64, len(way.Refs))
 									var prevNodeId int64 = 0
 									for index, deltaNodeId := range way.Refs {
 										nodeId := prevNodeId + deltaNodeId
@@ -220,8 +213,6 @@ func findMatchingNodesPass(file *os.File, wayNodeRefs [][]int64, totalBlobCount 
 			nodeOwners[nodeId] = true
 		}
 	}
-	println(len(nodeOwners))
-
 	pending := make(chan bool)
 
 	blockDataReader := MakePrimitiveBlockReader(file)
