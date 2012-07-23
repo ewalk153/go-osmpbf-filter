@@ -297,7 +297,7 @@ func main() {
 	inputFile := flag.String("i", "input.pbf.osm", "input OSM PBF file")
 	highMemory := flag.Bool("high-memory", false, "use higher amounts of memory for higher performance")
 	filterTag := flag.String("t", "highway", "tag to filter ways based upon")
-	filterValString := flag.String("r", "motorway motorway_linktrunk trunk_link primary primary_link secondary secondary_link tertiary tertiary_link", "types of roads to import")
+	filterValString := flag.String("r", "motorway motorway_link trunk trunk_link primary primary_link secondary secondary_link tertiary tertiary_link", "types of roads to import")
 	flag.Parse()
 
 	mystrings := strings.Fields(*filterValString)
