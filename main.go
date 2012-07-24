@@ -123,13 +123,13 @@ func findMatchingWaysPass(file *os.File, filterTag string, filterValues []string
 						println("OSMData decode error:", err.Error())
 						os.Exit(6)
 					}
-					var highway, oneway string
 					var tosend bool
 					var nodeRefs []int64
 					for _, primitiveGroup := range primitiveBlock.Primitivegroup {
 						for _, way := range primitiveGroup.Ways {
-							highway = ""
-							oneway = ""
+							var highway = ""
+							var oneway = ""
+							var periph = false
 							tosend = false
 							for i, keyIndex := range way.Keys {
 								valueIndex := way.Vals[i]
@@ -143,14 +143,21 @@ func findMatchingWaysPass(file *os.File, filterTag string, filterValues []string
 										prevNodeId = nodeId
 										nodeRefs[index] = nodeId
 									}
+									highway = value
 									tosend = true
 									appendNodeRefs <- nodeRefs
 								}
 								if key == "oneway" {
 									oneway = value
 								}
+								if key == "name" && (value == "Boulevard Périphérique Intérieur" || value == "Boulevard Périphérique Extérieur") {
+									periph = true
+								}
 							}
 							if tosend {
+								if periph {
+									highway = "peripherique"
+								}
 								wayqueue <- &myway{*way.Id, nodeRefs, highway, oneway}
 							}
 						}
